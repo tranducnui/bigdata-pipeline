@@ -1,0 +1,7 @@
+data/extracted/
+data/transformed/
+logs/
+airflow/airflow.cfg
+__pycache__/
+*.pyc
+*.crc
