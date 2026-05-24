@@ -3,5 +3,6 @@ data/transformed/
 logs/
 airflow/airflow.cfg
 __pycache__/
+.idea/
 *.pyc
 *.crc
