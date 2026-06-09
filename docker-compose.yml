@@ -1,16 +1,182 @@
 services:
 
-  sqlserver:
-    image: mcr.microsoft.com/mssql/server:2022-latest
-    container_name: sqlserver
-    environment:
-      ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: "BigData123!"
+  # ─────────────────────────────────────────
+  # HDFS
+  # ─────────────────────────────────────────
+  namenode:
+    image: apache/hadoop:3.3.6
+    container_name: namenode
+    hostname: namenode
+    user: root
+    command: ["hdfs", "namenode"]
     ports:
-      - "1435:1433"
+      - "9870:9870"   # HDFS Web UI
+      - "9000:9000"   # HDFS RPC
+    env_file:
+      - ./hadoop.env
+    environment:
+      ENSURE_NAMENODE_DIR: "/tmp/hadoop-root/dfs/name"
+      HDFS_NAMENODE_USER: "root"
     volumes:
-      - sqlserver_data:/var/opt/mssql
+      - namenode_data:/tmp/hadoop-root/dfs/name
+    networks:
+      - bigdata
 
+  datanode1:
+    image: apache/hadoop:3.3.6
+    container_name: datanode1
+    hostname: datanode1
+    user: root
+    command: ["hdfs", "datanode"]
+    env_file:
+      - ./hadoop.env
+    volumes:
+      - datanode1_data:/tmp/hadoop-root/dfs/data
+    depends_on:
+      - namenode
+    networks:
+      - bigdata
+
+  datanode2:
+    image: apache/hadoop:3.3.6
+    container_name: datanode2
+    hostname: datanode2
+    user: root
+    command: ["hdfs", "datanode"]
+    env_file:
+      - ./hadoop.env
+    volumes:
+      - datanode2_data:/tmp/hadoop-root/dfs/data
+    depends_on:
+      - namenode
+    networks:
+      - bigdata
+
+  datanode3:
+    image: apache/hadoop:3.3.6
+    container_name: datanode3
+    hostname: datanode3
+    user: root
+    command: ["hdfs", "datanode"]
+    env_file:
+      - ./hadoop.env
+    volumes:
+      - datanode3_data:/tmp/hadoop-root/dfs/data
+    depends_on:
+      - namenode
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # YARN
+  # ─────────────────────────────────────────
+  resourcemanager:
+    image: apache/hadoop:3.3.6
+    container_name: resourcemanager
+    hostname: resourcemanager
+    command: ["yarn", "resourcemanager"]
+    ports:
+      - "8088:8088"   # YARN Web UI
+    env_file:
+      - ./hadoop.env
+    depends_on:
+      - namenode
+    networks:
+      - bigdata
+
+  nodemanager:
+    image: apache/hadoop:3.3.6
+    container_name: nodemanager
+    hostname: nodemanager
+    command: ["yarn", "nodemanager"]
+    env_file:
+      - ./hadoop.env
+    depends_on:
+      - resourcemanager
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # HIVE METASTORE BACKEND (PostgreSQL)
+  # ─────────────────────────────────────────
+  hive-postgres:
+    image: postgres:15
+    container_name: hive-postgres
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive123
+    volumes:
+      - hive_postgres_data:/var/lib/postgresql/data
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # HIVE METASTORE
+  # ─────────────────────────────────────────
+  hive-metastore:
+    image: apache/hive:4.0.0
+    container_name: hive-metastore
+    hostname: hive-metastore
+    command: ["hive", "--service", "metastore"]
+    ports:
+      - "9083:9083"
+    environment:
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      SERVICE_OPTS: >-
+        -Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver
+        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-postgres:5432/metastore
+        -Djavax.jdo.option.ConnectionUserName=hive
+        -Djavax.jdo.option.ConnectionPassword=hive123
+    volumes:
+      - ./lib/postgresql-42.7.3.jar:/opt/hive/lib/postgresql-42.7.3.jar
+    depends_on:
+      - hive-postgres
+      - namenode
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # HIVESERVER2
+  # ─────────────────────────────────────────
+  hiveserver2:
+    image: apache/hive:4.0.0
+    container_name: hiveserver2
+    hostname: hiveserver2
+    command: ["hive", "--service", "hiveserver2"]
+    ports:
+      - "10000:10000"  # JDBC
+      - "10002:10002"  # HiveServer2 Web UI
+    environment:
+      SERVICE_NAME: hiveserver2
+      SERVICE_OPTS: >-
+        -Dhive.metastore.uris=thrift://hive-metastore:9083
+    depends_on:
+      - hive-metastore
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # TRINO (query engine on HDFS/Hive)
+  # ─────────────────────────────────────────
+  trino:
+    image: trinodb/trino:438
+    container_name: trino
+    hostname: trino
+    restart: unless-stopped
+    ports:
+      - "8090:8080"   # Trino Web UI
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog
+    depends_on:
+      - hive-metastore
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # SPARK
+  # ─────────────────────────────────────────
   spark:
     image: apache/spark:3.5.1
     container_name: spark
@@ -18,7 +184,12 @@ services:
     ports:
       - "8080:8080"
       - "7077:7077"
+    networks:
+      - bigdata
 
+  # ─────────────────────────────────────────
+  # AIRFLOW
+  # ─────────────────────────────────────────
   airflow:
     build: .
     container_name: airflow
@@ -37,12 +208,20 @@ services:
       - ./data:/opt/airflow/data
       - ./etl:/opt/airflow/etl
     command: standalone
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # KAFKA
+  # ─────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - bigdata
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -57,5 +236,33 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - bigdata
+
+  # ─────────────────────────────────────────
+  # SQL SERVER
+  # ─────────────────────────────────────────
+#  sqlserver:
+#    image: mcr.microsoft.com/mssql/server:2022-latest
+#    container_name: sqlserver
+#    environment:
+#      ACCEPT_EULA: "Y"
+#      MSSQL_SA_PASSWORD: "BigData123!"
+#    ports:
+#      - "1435:1433"
+#    volumes:
+#      - sqlserver_data:/var/opt/mssql
+#    networks:
+#      - bigdata
+
+networks:
+  bigdata:
+    driver: bridge
+
 volumes:
-  sqlserver_data:
+  namenode_data:
+  datanode1_data:
+  datanode2_data:
+  datanode3_data:
+  hive_postgres_data:
+#  sqlserver_data:

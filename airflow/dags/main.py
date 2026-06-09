@@ -1,36 +1,63 @@
 import sys
+import logging
+
 sys.path.insert(0, '/opt/airflow')
+
 from pyspark.sql import SparkSession
 from etl.extract import extract_data
 from etl.transform import transform_data
 from etl.load import load_data
-import logging
 
+# ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     filename="logs/pipeline.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-logging.info("Pipeline started")
+# ─── Config ─────────────────────────────────────────────────────────────────
+# "csv"    → lần đầu chạy, đọc từ file local
+# "bronze" → các lần sau, đọc từ HDFS Bronze
+EXTRACT_SOURCE = "csv"
 
-spark = (SparkSession.builder.
-         appName("SalesETL").
-         master("local[*]").
-         getOrCreate())
+# ─── Spark Session ──────────────────────────────────────────────────────────
+spark = SparkSession.builder \
+    .appName("SalesETL") \
+    .master("local[*]") \
+    .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000") \
+    .getOrCreate()
 
-#extact
-df = extract_data(spark)
+spark.sparkContext.setLogLevel("WARN")
 
-#transform
-result = transform_data(df)
+try:
+    logging.info("Pipeline started")
+    print("=== Pipeline Started ===")
 
-#show result
-result.show()
+    # 1. Extract
+    df = extract_data(spark, source=EXTRACT_SOURCE)
+    df.show(5)
 
-#load
-load_data(result)
+    # 2. Transform — trả về dict {"bronze", "silver", "gold"}
+    results = transform_data(df)
 
-logging.info("Pipeline completed successfully")
+    # Show kết quả Gold layer
+    print("\n=== Gold Layer Preview ===")
+    results["gold"].show(10)
 
-spark.stop()
+    # 3. Load — ghi cả 3 tầng xuống HDFS
+    load_data(
+        results["bronze"],
+        results["silver"],
+        results["gold"]
+    )
+
+    logging.info("Pipeline completed successfully")
+    print("=== Pipeline Completed ===")
+
+except Exception as e:
+    logging.error(f"Pipeline failed: {str(e)}")
+    print(f"[ERROR] Pipeline failed: {str(e)}")
+    raise
+
+finally:
+    spark.stop()
